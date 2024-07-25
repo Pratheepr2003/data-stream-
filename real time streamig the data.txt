@@ -1,0 +1,60 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, to_date
+from pyspark.sql.types import DecimalType
+
+
+storage_account_name = "pratheepstoredatalake1"
+storage_account_key = "V74GF2WKv/Q7BVU798GxxYwITzPTAJI9tt5VlvK6udEo+qFByvf0ldZABkr6/9/4ajn/LTT903/l+AStS+DsyA=="
+input_container_name = "input"
+storagetable_container_name = "storagetable"
+
+
+json_file_path = f"abfss://{input_container_name}@{storage_account_name}.dfs.core.windows.net/Invoice_sample.json"
+
+
+delta_table_path = f"abfss://{storagetable_container_name}@{storage_account_name}.dfs.core.windows.net/delta/InvoiceHeader"
+checkpoint_location = delta_table_path + "/_checkpoints"
+
+
+spark = SparkSession.builder \
+    .appName("Streaming JSON to Delta Table") \
+    .getOrCreate()
+
+
+spark.conf.set(f"fs.azure.account.key.{storage_account_name}.dfs.core.windows.net", storage_account_key)
+
+
+df_initial = spark.read.option("multiline", "true").json(json_file_path)
+
+
+schema = df_initial.schema
+
+
+print(schema)
+
+
+df_stream = spark.readStream \
+    .schema(schema) \
+    .format("cloudFiles") \
+    .option("cloudFiles.format", "json") \
+    .load(f"abfss://{input_container_name}@{storage_account_name}.dfs.core.windows.net/")
+
+df_selected = df_stream.select(
+    col("invoice_id").cast("string"),
+    col("invoice_number").cast("string"),
+    to_date(col("date"), "yyyy-MM-dd").alias("idate"),
+    col("customer_id").cast("string"),
+    col("customer_name").cast("string"),
+    col("branch_name").cast("string"),
+    col("total").cast(DecimalType(12, 4)),
+    col("salesperson_name").cast("string")
+)
+
+query = df_selected.writeStream \
+    .format("delta") \
+    .option("checkpointLocation", checkpoint_location) \
+    .outputMode("append") \
+    .start(delta_table_path)
+
+
+
